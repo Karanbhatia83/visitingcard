@@ -1,0 +1,182 @@
+// Business Card Scanner — data model
+// Provider: PostgreSQL. Uses a pooled DATABASE_URL at runtime and a
+// DIRECT_URL for migrations (recommended for serverless on Netlify).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Auth.js (NextAuth) models
+// ---------------------------------------------------------------------------
+
+model User {
+  id            String    @id @default(cuid())
+  name          String?
+  email         String?   @unique
+  emailVerified DateTime?
+  image         String?
+
+  accounts Account[]
+  sessions Session[]
+  contacts Contact[]
+  scans    Scan[]
+  logs     AuditLog[]
+  settings UserSettings?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@index([userId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
+
+// ---------------------------------------------------------------------------
+// Application models
+// ---------------------------------------------------------------------------
+
+enum SyncStatus {
+  LOCAL_ONLY // saved in app, not yet pushed to Google
+  SYNCED // exists in Google Contacts
+  PENDING // sync in progress / queued
+  FAILED // last sync attempt failed
+}
+
+enum ScanStatus {
+  PROCESSING
+  EXTRACTED
+  SAVED
+  FAILED
+}
+
+model Contact {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  fullName    String
+  company     String?
+  designation String?
+  website     String?
+  linkedin    String?
+  address     String?
+  notes       String?  @db.Text
+
+  // Multi-value fields stored as JSON string arrays.
+  mobileNumbers Json @default("[]")
+  officeNumbers Json @default("[]")
+  emails        Json @default("[]")
+
+  // Normalised single values for fast duplicate lookups.
+  primaryEmail String?
+  primaryPhone String?
+
+  // Stored card image (object key in the S3/R2 bucket).
+  cardImageKey String?
+
+  // Google People API linkage.
+  googleResourceName String?    @unique
+  googleEtag         String?
+  syncStatus         SyncStatus @default(LOCAL_ONLY)
+  syncError          String?
+  lastSyncedAt       DateTime?
+
+  scans Scan[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+  @@index([userId, primaryEmail])
+  @@index([userId, primaryPhone])
+  @@index([userId, fullName])
+}
+
+model Scan {
+  id        String     @id @default(cuid())
+  userId    String
+  user      User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  status    ScanStatus @default(PROCESSING)
+  cardImageKey String?
+
+  // Raw text the model read off the card (audit / debugging).
+  ocrText   String? @db.Text
+  // Full structured JSON the AI returned.
+  aiOutput  Json?
+  aiProvider String?
+  aiModel    String?
+  errorMessage String?
+
+  contactId String?
+  contact   Contact? @relation(fields: [contactId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+  @@index([userId, status])
+}
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  action    String // e.g. CONTACT_CREATE, CONTACT_UPDATE, GOOGLE_SYNC, EXPORT
+  entity    String? // e.g. Contact, Scan
+  entityId  String?
+  metadata  Json?
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@index([action])
+}
+
+model UserSettings {
+  userId        String  @id
+  user          User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  // Push the contact to Google automatically on save.
+  autoSyncGoogle Boolean @default(true)
+  // When deleting in-app, also delete from Google Contacts.
+  deleteFromGoogle Boolean @default(false)
+  updatedAt     DateTime @updatedAt
+}
