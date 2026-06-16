@@ -1,0 +1,31 @@
+# Netlify configuration for the Business Card Scanner (Next.js App Router).
+# The official Next.js Runtime is installed automatically by Netlify and
+# turns App Router routes / server actions into serverless functions.
+
+[build]
+  command = "npm run build"
+  publish = ".next"
+
+[build.environment]
+  NODE_VERSION = "20"
+  # Skip Prisma's "no engine" warnings during install; engine is generated in build.
+  PRISMA_HIDE_UPDATE_MESSAGE = "true"
+
+[[plugins]]
+  package = "@netlify/plugin-nextjs"
+
+# Long-cache the static PWA assets.
+[[headers]]
+  for = "/icons/*"
+  [headers.values]
+    Cache-Control = "public, max-age=31536000, immutable"
+
+[[headers]]
+  for = "/sw.js"
+  [headers.values]
+    Cache-Control = "public, max-age=0, must-revalidate"
+
+[[headers]]
+  for = "/manifest.webmanifest"
+  [headers.values]
+    Content-Type = "application/manifest+json"
