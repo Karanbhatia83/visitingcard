@@ -1,0 +1,108 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 180 22% 99%;
+    --foreground: 195 55% 13%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 195 55% 13%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 195 55% 13%;
+
+    --primary: 179 80% 27%; /* deep teal */
+    --primary-foreground: 0 0% 100%;
+
+    --accent: 36 92% 55%; /* warm amber — the scan action */
+    --accent-foreground: 196 60% 12%;
+
+    --secondary: 180 14% 95%;
+    --secondary-foreground: 195 55% 16%;
+
+    --muted: 180 14% 95%;
+    --muted-foreground: 195 12% 38%;
+
+    --destructive: 4 63% 46%;
+    --destructive-foreground: 0 0% 100%;
+
+    --success: 140 67% 32%;
+    --success-foreground: 0 0% 100%;
+
+    --border: 180 12% 85%;
+    --input: 180 12% 80%;
+    --ring: 179 80% 27%;
+
+    --radius: 0.875rem;
+  }
+
+  .dark {
+    --background: 196 45% 8%;
+    --foreground: 180 18% 96%;
+    --card: 196 40% 11%;
+    --card-foreground: 180 18% 96%;
+    --popover: 196 40% 11%;
+    --popover-foreground: 180 18% 96%;
+    --primary: 175 70% 45%;
+    --primary-foreground: 196 60% 8%;
+    --accent: 36 92% 58%;
+    --accent-foreground: 196 60% 10%;
+    --secondary: 196 30% 16%;
+    --secondary-foreground: 180 18% 96%;
+    --muted: 196 30% 16%;
+    --muted-foreground: 185 12% 68%;
+    --destructive: 4 70% 56%;
+    --destructive-foreground: 0 0% 100%;
+    --success: 140 60% 45%;
+    --success-foreground: 0 0% 100%;
+    --border: 196 25% 22%;
+    --input: 196 25% 26%;
+    --ring: 175 70% 45%;
+  }
+
+  /* High-contrast preference: thicken borders and darken text. */
+  @media (prefers-contrast: more) {
+    :root {
+      --foreground: 196 80% 8%;
+      --border: 195 30% 55%;
+      --muted-foreground: 195 30% 25%;
+    }
+  }
+
+  * {
+    @apply border-border;
+  }
+  html {
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
+  }
+  body {
+    @apply bg-background text-foreground;
+    font-feature-settings: 'cv02', 'cv03', 'cv04';
+    -webkit-tap-highlight-color: transparent;
+  }
+  /* Always-visible keyboard focus. */
+  :focus-visible {
+    @apply outline-none ring-2 ring-ring ring-offset-2 ring-offset-background;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.001ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.001ms !important;
+    }
+  }
+}
+
+/* Safe-area padding so the bottom nav clears the home indicator. */
+.pb-safe {
+  padding-bottom: calc(env(safe-area-inset-bottom) + 0.5rem);
+}
+.pt-safe {
+  padding-top: env(safe-area-inset-top);
+}
