@@ -1,0 +1,8 @@
+User-agent: *
+Allow: /$
+Allow: /signin
+Disallow: /scan
+Disallow: /review
+Disallow: /contacts
+Disallow: /settings
+Disallow: /api
