@@ -200,7 +200,7 @@ export function ContactForm({ initial, mode, scanId, contactId }: Props) {
     } catch {
       // If duplicate lookup fails, fall through to a normal create.
     }
-    await persist({ resolution: 'create' });
+    await persist();
   }
 
   return (

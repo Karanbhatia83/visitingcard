@@ -25,7 +25,7 @@ export async function GET(req: Request) {
 
   if (format === 'xlsx') {
     const buf = await toXLSX(contacts);
-    return new Response(buf, {
+    return new Response(new Uint8Array(buf), {
       headers: {
         'Content-Type': EXPORT_MIME.xlsx,
         'Content-Disposition': `attachment; filename="${filename}"`,
