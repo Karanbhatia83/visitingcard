@@ -280,39 +280,50 @@ export async function resyncFromGoogle(userId: string) {
   let imported = 0;
   let updated = 0;
 
-  for (const p of people) {
-    const fullName = p.names?.[0]?.displayName || p.names?.[0]?.givenName || '';
-    const emails = (p.emailAddresses || []).map((e) => e.value || '').filter(Boolean);
-    const phones = (p.phoneNumbers || []).map((e) => e.value || '').filter(Boolean);
-    if (!fullName && emails.length === 0 && phones.length === 0) continue;
+  // Process in small concurrent batches so a large address book imports quickly.
+  // (Doing these one-by-one was slow enough to risk the serverless time limit.)
+  const BATCH = 25;
+  for (let i = 0; i < people.length; i += BATCH) {
+    const batch = people.slice(i, i + BATCH);
+    const results = await Promise.all(
+      batch.map(async (p) => {
+        const fullName = p.names?.[0]?.displayName || p.names?.[0]?.givenName || '';
+        const emails = (p.emailAddresses || []).map((e) => e.value || '').filter(Boolean);
+        const phones = (p.phoneNumbers || []).map((e) => e.value || '').filter(Boolean);
+        if (!fullName && emails.length === 0 && phones.length === 0) return 'skip' as const;
 
-    const primaryEmail = emails[0] ? normaliseEmail(emails[0]) : null;
-    const primaryPhone = phones[0] ? normalisePhone(phones[0]) : null;
+        const primaryEmail = emails[0] ? normaliseEmail(emails[0]) : null;
+        const primaryPhone = phones[0] ? normalisePhone(phones[0]) : null;
 
-    const existing = await prisma.contact.findUnique({
-      where: { googleResourceName: p.resourceName },
-    });
+        const existing = await prisma.contact.findUnique({
+          where: { googleResourceName: p.resourceName },
+        });
 
-    const base = {
-      fullName: fullName || '(no name)',
-      company: p.organizations?.[0]?.name || null,
-      emails: emails as unknown as object,
-      mobileNumbers: phones as unknown as object,
-      primaryEmail,
-      primaryPhone,
-      googleResourceName: p.resourceName,
-      syncStatus: 'SYNCED' as const,
-      lastSyncedAt: new Date(),
-      syncError: null,
-    };
+        const base = {
+          fullName: fullName || '(no name)',
+          company: p.organizations?.[0]?.name || null,
+          emails: emails as unknown as object,
+          mobileNumbers: phones as unknown as object,
+          primaryEmail,
+          primaryPhone,
+          googleResourceName: p.resourceName,
+          syncStatus: 'SYNCED' as const,
+          lastSyncedAt: new Date(),
+          syncError: null,
+        };
 
-    if (existing) {
-      if (existing.userId !== userId) continue;
-      await prisma.contact.update({ where: { id: existing.id }, data: base });
-      updated += 1;
-    } else {
-      await prisma.contact.create({ data: { userId, ...base } });
-      imported += 1;
+        if (existing) {
+          if (existing.userId !== userId) return 'skip' as const;
+          await prisma.contact.update({ where: { id: existing.id }, data: base });
+          return 'updated' as const;
+        }
+        await prisma.contact.create({ data: { userId, ...base } });
+        return 'imported' as const;
+      })
+    );
+    for (const r of results) {
+      if (r === 'imported') imported += 1;
+      else if (r === 'updated') updated += 1;
     }
   }
 

@@ -150,9 +150,22 @@ export async function findGoogleDuplicates(
 // Pull connections for re-sync (returns lightweight refs).
 export async function listGoogleConnections(userId: string): Promise<GooglePerson[]> {
   const readMask = 'names,organizations,emailAddresses,phoneNumbers';
-  const data = await gfetch(
-    userId,
-    `/people/me/connections?personFields=${readMask}&pageSize=200&sortOrder=LAST_MODIFIED_DESCENDING`
-  );
-  return (data.connections || []) as GooglePerson[];
+  const all: GooglePerson[] = [];
+  let pageToken: string | undefined;
+  // Follow Google's pagination until there are no more pages (instead of
+  // stopping at the first page, which capped imports at the page size).
+  do {
+    const params = new URLSearchParams({
+      personFields: readMask,
+      pageSize: '1000',
+      sortOrder: 'LAST_MODIFIED_DESCENDING',
+    });
+    if (pageToken) params.set('pageToken', pageToken);
+    const data = await gfetch(userId, `/people/me/connections?${params.toString()}`);
+    if (Array.isArray(data.connections)) {
+      all.push(...(data.connections as GooglePerson[]));
+    }
+    pageToken = data.nextPageToken as string | undefined;
+  } while (pageToken);
+  return all;
 }
