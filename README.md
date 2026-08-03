@@ -250,10 +250,12 @@ A standalone, no-login tool lives at **`/reels`** for saving public Instagram
 reels to your device.
 
 - **Page:** `src/app/reels/page.tsx` — paste a reel link, preview it, download.
-- **Resolver:** `src/lib/instagram.ts` — parses any reel/post/tv URL shape,
-  converts the shortcode to a media id, and resolves the direct video URL via
-  Instagram's public web media API, falling back to scraping the embed page's
-  `og:video` tag.
+- **Resolver:** `src/lib/instagram.ts` — parses any reel/post/tv URL shape and
+  resolves the direct video URL via Instagram's **logged-out web GraphQL query**
+  (`graphql/query`, `doc_id` → `xdt_api__v1__media__shortcode__web_info`). It
+  grabs an anonymous `csrftoken` from the homepage first — the same technique
+  public downloaders use — which works from server/datacenter IPs without any
+  user login. Scraping the embed page's `og:video` tag is kept as a fallback.
 - **API:** `POST /api/reels` returns `{ author, caption, thumbnailUrl,
   downloadUrl }`. The video streams through `GET /api/reels/download`, which
   forces an attachment and is **locked to Instagram/Facebook CDN hosts** so it
@@ -262,8 +264,11 @@ reels to your device.
 It requires no authentication and is excluded from the auth-gated routes.
 
 **Caveats.** Only **public** reels work — private accounts need a logged-in
-session and are intentionally out of scope. Instagram actively rate-limits and
-blocks datacenter IPs, so resolution is best-effort: from serverless/CDN IPs it
-may intermittently fail with a clear error. For higher reliability you can add
-a valid `sessionid` cookie to the upstream requests in `src/lib/instagram.ts`.
-Please download only content you have the right to save.
+session and are intentionally out of scope. Instagram **rotates the GraphQL
+`doc_id`** every so often; if resolution starts failing site-wide, refresh
+`POST_QUERY_DOC_ID` in `src/lib/instagram.ts` with the current value (grab it
+from a logged-out browser's network tab, or from an up-to-date scraper like
+[instaloader](https://github.com/instaloader/instaloader)). Instagram may also
+rate-limit a busy IP; for heavy use, route requests through a residential proxy
+or add a `sessionid` cookie. Please download only content you have the right to
+save.
