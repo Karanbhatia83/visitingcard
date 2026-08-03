@@ -241,3 +241,29 @@ public/                       manifest, service worker, offline page, icons
   versions use caret ranges; `npm install` resolves the latest compatible.
 - **Image serving.** With a private bucket, images are streamed via signed URLs
   through `/api/image`. Set `S3_PUBLIC_BASE_URL` only if your bucket is public.
+
+---
+
+## Bonus utility: Instagram Reel Downloader
+
+A standalone, no-login tool lives at **`/reels`** for saving public Instagram
+reels to your device.
+
+- **Page:** `src/app/reels/page.tsx` — paste a reel link, preview it, download.
+- **Resolver:** `src/lib/instagram.ts` — parses any reel/post/tv URL shape,
+  converts the shortcode to a media id, and resolves the direct video URL via
+  Instagram's public web media API, falling back to scraping the embed page's
+  `og:video` tag.
+- **API:** `POST /api/reels` returns `{ author, caption, thumbnailUrl,
+  downloadUrl }`. The video streams through `GET /api/reels/download`, which
+  forces an attachment and is **locked to Instagram/Facebook CDN hosts** so it
+  can never act as an open proxy.
+
+It requires no authentication and is excluded from the auth-gated routes.
+
+**Caveats.** Only **public** reels work — private accounts need a logged-in
+session and are intentionally out of scope. Instagram actively rate-limits and
+blocks datacenter IPs, so resolution is best-effort: from serverless/CDN IPs it
+may intermittently fail with a clear error. For higher reliability you can add
+a valid `sessionid` cookie to the upstream requests in `src/lib/instagram.ts`.
+Please download only content you have the right to save.
