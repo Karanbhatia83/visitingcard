@@ -4,6 +4,7 @@ import { useState } from 'react';
 import Link from 'next/link';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { DownloaderTabs } from '@/components/downloader-tabs';
 import { Download, Instagram, Loader2, Link2, AlertCircle } from 'lucide-react';
 
 interface ResolvedReel {
@@ -79,6 +80,8 @@ export default function ReelsPage() {
         </span>
         <span className="font-display text-2xl font-bold tracking-tight">Reel Downloader</span>
       </header>
+
+      <DownloaderTabs active="/reels" />
 
       <main className="flex flex-1 flex-col py-8">
         <h1 className="font-display text-[2rem] font-extrabold leading-tight tracking-tight text-foreground">
