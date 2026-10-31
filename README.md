@@ -251,11 +251,14 @@ reels to your device.
 
 - **Page:** `src/app/reels/page.tsx` — paste a reel link, preview it, download.
 - **Resolver:** `src/lib/instagram.ts` — parses any reel/post/tv URL shape and
-  resolves the direct video URL via Instagram's **logged-out web GraphQL query**
-  (`graphql/query`, `doc_id` → `xdt_api__v1__media__shortcode__web_info`). It
-  grabs an anonymous `csrftoken` from the homepage first — the same technique
-  public downloaders use — which works from server/datacenter IPs without any
-  user login. Scraping the embed page's `og:video` tag is kept as a fallback.
+  resolves the direct video URL via Instagram's **logged-out web GraphQL
+  queries**, sent to `/api/graphql` exactly the way the anonymous website does:
+  it grabs an anonymous `csrftoken` cookie and the `lsd` token from the
+  homepage first, then tries the shortcode query (`doc_id` →
+  `xdt_api__v1__media__shortcode__web_info`) and, if that fails, the media-id
+  query the logged-out post page runs (`xig_polaris_media`). This works from
+  server/datacenter IPs without any user login. Scraping the embed page is
+  kept as a last-resort fallback.
 - **API:** `POST /api/reels` returns `{ author, caption, thumbnailUrl,
   downloadUrl }`. The video streams through `GET /api/reels/download`, which
   forces an attachment and is **locked to Instagram/Facebook CDN hosts** so it
@@ -264,11 +267,52 @@ reels to your device.
 It requires no authentication and is excluded from the auth-gated routes.
 
 **Caveats.** Only **public** reels work — private accounts need a logged-in
-session and are intentionally out of scope. Instagram **rotates the GraphQL
-`doc_id`** every so often; if resolution starts failing site-wide, refresh
-`POST_QUERY_DOC_ID` in `src/lib/instagram.ts` with the current value (grab it
-from a logged-out browser's network tab, or from an up-to-date scraper like
-[instaloader](https://github.com/instaloader/instaloader)). Instagram may also
-rate-limit a busy IP; for heavy use, route requests through a residential proxy
-or add a `sessionid` cookie. Please download only content you have the right to
+session and are intentionally out of scope. Instagram **changes this surface
+every few months**: in late 2026 it started answering logged-out
+`/graphql/query` calls with 401 `require_login` for every post (which broke
+every download until the resolver moved to `/api/graphql` + `lsd`), and it
+rotates the GraphQL `doc_id`s. If resolution starts failing site-wide, check the
+`[reels]` warnings in the Netlify function logs, then refresh
+`SHORTCODE_QUERY` / `MEDIA_ID_QUERY` in `src/lib/instagram.ts` with the current
+values (grab them from a logged-out browser's network tab, or from an
+up-to-date scraper like [yt-dlp](https://github.com/yt-dlp/yt-dlp/blob/master/yt_dlp/extractor/instagram.py)
+or [instaloader](https://github.com/instaloader/instaloader)). Instagram may
+also rate-limit a busy IP; for heavy use, route requests through a residential
+proxy or add a `sessionid` cookie. Please download only content you have the right to
 save.
+
+## Bonus utility: YouTube Downloader
+
+A second no-login tool lives at **`/youtube`** (switch between the two with the
+Instagram / YouTube tabs at the top of either page). It downloads public
+YouTube videos **and Shorts** as MP4 — or audio only as M4A.
+
+- **Page:** `src/app/youtube/page.tsx` — paste any link shape (`watch?v=`,
+  `youtu.be/`, `/shorts/`, `/live/`, `/embed/`, `m.` / `music.` subdomains),
+  pick a quality (144p–1080p, with file sizes), download with a live progress
+  bar and a cancel button.
+- **Resolver:** `src/lib/youtube.ts` — uses YouTube's InnerTube player API via
+  [`youtubei.js`](https://github.com/LuanRT/YouTube.js), trying a few app
+  clients (`ANDROID_VR`, `IOS`, `VISIONOS`) that return ready-to-use stream
+  URLs. Each client's links are probed before use, and the download proxy
+  switches client automatically if YouTube cuts a link off mid-download.
+- **API:** `POST /api/youtube` returns title, channel, thumbnail and the
+  quality list. `GET /api/youtube/stream?v=&itag=&start=&end=` returns one
+  ≤ 4 MiB byte range. It accepts only a video id + format number (the stream
+  URL is resolved server-side), so it can never act as an open proxy.
+- **Merging:** YouTube only serves HD as separate video and audio streams. The
+  browser downloads both in parallel chunks (`src/lib/youtube-client.ts`) and
+  merges them into one fast-start MP4 with
+  [`mediabunny`](https://mediabunny.dev) — lossless, no re-encoding, no ffmpeg.
+  Small chunks keep every request well inside serverless time and size limits.
+  Video is H.264 so files play everywhere, including iPhone Photos.
+
+**Caveats.** Only **public** videos work — private, members-only and
+age-restricted videos need a signed-in account and are out of scope. Live
+streams can be downloaded after they end. YouTube regularly tightens what
+anonymous clients may download and may block busy datacenter IPs; if downloads
+start failing site-wide, update `youtubei.js` first (`npm i youtubei.js@latest`)
+and adjust the `CLIENTS` list in `src/lib/youtube.ts`. Very long videos at
+1080p can be several hundred MB and are assembled in the browser's memory —
+pick a lower quality on older phones. Please download only content you have
+the right to save.

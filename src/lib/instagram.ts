@@ -1,23 +1,42 @@
 // Instagram Reel resolver.
 //
 // Given a public Instagram reel/post URL, resolve it to a direct, downloadable
-// video URL plus a little metadata (thumbnail, caption, author). We try
-// Instagram's logged-out web GraphQL query first (structured, works from server
-// IPs with only an anonymous csrftoken) and fall back to scraping the embed
-// page's og:video tag if that is blocked.
+// video URL plus a little metadata (thumbnail, caption, author). We use the
+// same logged-out web GraphQL queries Instagram's own website makes for
+// anonymous visitors, sent to `/api/graphql` with the page's `lsd` token, and
+// fall back to scraping the embed page if those are blocked.
 //
 // This only works for PUBLIC content — private accounts require a logged-in
 // session and are intentionally out of scope.
+//
+// History: until late 2026 the shortcode query could be POSTed to
+// `/graphql/query` with only an anonymous csrftoken. Instagram now answers
+// those logged-out calls with 401 `{"require_login": true}` for every post, so
+// the queries go to `/api/graphql` instead, which additionally requires the
+// `lsd` token embedded in the homepage HTML (header `X-FB-LSD` + form field).
 
 /** Instagram's public web app id — sent as X-IG-App-ID on web API calls. */
 const IG_APP_ID = '936619743392459';
 
-// Instagram's persisted GraphQL query for a post/reel by shortcode
-// (PolarisPostRootQuery → xdt_api__v1__media__shortcode__web_info). Instagram
-// rotates these doc_ids periodically; if resolution starts failing site-wide,
-// this is the first thing to refresh (grab the current value from a logged-out
-// browser's network tab, or from an up-to-date scraper like instaloader).
-const POST_QUERY_DOC_ID = '27128499623469141';
+/** Sent as X-ASBD-ID by the logged-out web app on `/api/graphql` calls. */
+const IG_ASBD_ID = '359341';
+
+// Instagram's persisted GraphQL queries. Instagram rotates these doc_ids
+// periodically; if resolution starts failing site-wide, these are the first
+// thing to refresh (grab the current values from a logged-out browser's
+// network tab, or from an up-to-date scraper like yt-dlp or instaloader).
+//
+// 1) Post/reel by shortcode → xdt_api__v1__media__shortcode__web_info.items[0]
+const SHORTCODE_QUERY = {
+  docId: '27128499623469141',
+  friendlyName: 'PolarisPostActionLoadPostQueryQuery',
+} as const;
+// 2) Post/reel by numeric media id → xig_polaris_media.if_not_gated_logged_out
+//    (the query the logged-out desktop post page itself runs).
+const MEDIA_ID_QUERY = {
+  docId: '27130156389949648',
+  friendlyName: 'PolarisLoggedOutDesktopWWWPostRootContentQuery',
+} as const;
 
 const DESKTOP_UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
@@ -88,16 +107,55 @@ function safeFilename(shortcode: string, author: string | null): string {
 }
 
 /**
- * Instagram's logged-out web GraphQL endpoint requires a valid csrftoken: a
- * matching `csrftoken` cookie AND `X-CSRFToken` header. We get one for free by
- * hitting the homepage once, then reuse its Set-Cookie on the query. Without
- * this the endpoint returns 403.
+ * Shortcodes are the numeric media id written in a URL-safe base64 alphabet.
+ * Longer codes (private/"only followers" shares) carry an extra suffix that is
+ * not part of the id.
  */
-async function getWebSession(): Promise<{ cookie: string; csrfToken: string } | null> {
+const SHORTCODE_ALPHABET =
+  'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+
+export function shortcodeToMediaId(shortcode: string): string | null {
+  const code = shortcode.length > 28 ? shortcode.slice(0, -28) : shortcode;
+  let id = 0n;
+  for (const ch of code) {
+    const idx = SHORTCODE_ALPHABET.indexOf(ch);
+    if (idx === -1) return null;
+    id = id * 64n + BigInt(idx);
+  }
+  return id === 0n ? null : id.toString();
+}
+
+interface WebSession {
+  cookie: string;
+  csrfToken: string;
+  lsdToken: string;
+}
+
+/**
+ * Instagram's logged-out GraphQL endpoint needs two anonymous tokens, both
+ * handed out by the homepage: the `csrftoken` cookie (echoed back as the
+ * `X-CSRFToken` header) and the `lsd` token embedded in the page's inline
+ * JSON (sent as `X-FB-LSD` header AND `lsd` form field). Without the lsd token
+ * the endpoint answers "Rate limit exceeded"; without the cookie it returns 403.
+ */
+async function getWebSession(): Promise<WebSession | null> {
   const res = await fetch('https://www.instagram.com/', {
-    headers: { 'User-Agent': DESKTOP_UA, Accept: 'text/html' },
+    headers: {
+      'User-Agent': DESKTOP_UA,
+      Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+      'Accept-Language': 'en-US,en;q=0.9',
+      'Sec-Fetch-Dest': 'document',
+      'Sec-Fetch-Mode': 'navigate',
+      'Sec-Fetch-Site': 'none',
+    },
+    redirect: 'manual',
     cache: 'no-store',
   });
+  if (!res.ok) {
+    console.warn(`[reels] instagram homepage returned ${res.status}`);
+    return null;
+  }
+
   const setCookies = res.headers.getSetCookie?.() ?? [];
   const pairs: string[] = [];
   let csrfToken = '';
@@ -110,8 +168,80 @@ async function getWebSession(): Promise<{ cookie: string; csrfToken: string } | 
     pairs.push(`${name}=${value}`);
     if (name === 'csrftoken') csrfToken = value;
   }
-  if (!csrfToken) return null;
-  return { cookie: pairs.join('; '), csrfToken };
+
+  const html = await res.text();
+  const lsdToken =
+    html.match(/\["LSD",\[\],\{"token":"([^"]+)"/)?.[1] ??
+    html.match(/"lsd":\{"token":"([^"]+)"/)?.[1] ??
+    '';
+
+  if (!csrfToken || !lsdToken) {
+    console.warn(
+      `[reels] instagram homepage gave no ${!csrfToken ? 'csrftoken' : 'lsd token'}`
+    );
+    return null;
+  }
+  return { cookie: pairs.join('; '), csrfToken, lsdToken };
+}
+
+/**
+ * POST a persisted query to Instagram's logged-out `/api/graphql` endpoint,
+ * the way the anonymous web app does. Returns the parsed JSON body (which may
+ * still carry an `errors` array) or null on a transport/HTTP failure.
+ */
+async function postGraphql(
+  session: WebSession,
+  shortcode: string,
+  query: { docId: string; friendlyName: string },
+  variables: Record<string, unknown>
+): Promise<any | null> {
+  const body = new URLSearchParams({
+    lsd: session.lsdToken,
+    fb_api_caller_class: 'RelayModern',
+    fb_api_req_friendly_name: query.friendlyName,
+    server_timestamps: 'true',
+    doc_id: query.docId,
+    variables: JSON.stringify(variables),
+  });
+
+  const res = await fetch('https://www.instagram.com/api/graphql', {
+    method: 'POST',
+    headers: {
+      'User-Agent': DESKTOP_UA,
+      Accept: '*/*',
+      'Accept-Language': 'en-US,en;q=0.9',
+      'Content-Type': 'application/x-www-form-urlencoded',
+      Origin: 'https://www.instagram.com',
+      Referer: `https://www.instagram.com/reel/${shortcode}/`,
+      'X-IG-App-ID': IG_APP_ID,
+      'X-ASBD-ID': IG_ASBD_ID,
+      'X-IG-WWW-Claim': '0',
+      'X-CSRFToken': session.csrfToken,
+      'X-FB-LSD': session.lsdToken,
+      'X-FB-Friendly-Name': query.friendlyName,
+      'X-Requested-With': 'XMLHttpRequest',
+      'Sec-Fetch-Dest': 'empty',
+      'Sec-Fetch-Mode': 'cors',
+      'Sec-Fetch-Site': 'same-origin',
+      Cookie: session.cookie,
+    },
+    body,
+    cache: 'no-store',
+  });
+
+  const text = await res.text();
+  if (!res.ok) {
+    console.warn(
+      `[reels] ${query.friendlyName} ${shortcode}: HTTP ${res.status} ${text.slice(0, 200)}`
+    );
+    return null;
+  }
+  try {
+    return JSON.parse(text);
+  } catch {
+    console.warn(`[reels] ${query.friendlyName} ${shortcode}: non-JSON body`);
+    return null;
+  }
 }
 
 /** Pull a downloadable reel out of Instagram's Polaris web-info media item. */
@@ -141,48 +271,59 @@ function mediaFromItem(shortcode: string, item: any): ReelMedia {
 }
 
 /**
- * Strategy 1: Instagram's logged-out web GraphQL query by shortcode. This is
- * the method public downloaders rely on — it works from server IPs without a
- * user login (only an anonymous csrftoken), unlike the app media-info API.
+ * Strategy 1: the shortcode → web_info query. Same persisted query the site
+ * used on `/graphql/query`, now sent to `/api/graphql` with the lsd token.
  */
-async function resolveViaGraphql(shortcode: string): Promise<ReelMedia | null> {
-  const session = await getWebSession();
-  if (!session) return null;
-
-  const body = new URLSearchParams({
-    doc_id: POST_QUERY_DOC_ID,
-    server_timestamps: 'true',
-    variables: JSON.stringify({
-      shortcode,
-      __relay_internal__pv__PolarisAIGMMediaWebLabelEnabledrelayprovider: false,
-    }),
+async function resolveViaShortcodeQuery(
+  session: WebSession,
+  shortcode: string
+): Promise<ReelMedia | null> {
+  const data = await postGraphql(session, shortcode, SHORTCODE_QUERY, {
+    shortcode,
+    __relay_internal__pv__PolarisAIGMMediaWebLabelEnabledrelayprovider: false,
   });
-
-  const res = await fetch('https://www.instagram.com/graphql/query', {
-    method: 'POST',
-    headers: {
-      'User-Agent': DESKTOP_UA,
-      Accept: '*/*',
-      'Content-Type': 'application/x-www-form-urlencoded',
-      'X-IG-App-ID': IG_APP_ID,
-      'X-CSRFToken': session.csrfToken,
-      'Sec-Fetch-Site': 'same-origin',
-      Cookie: session.cookie,
-    },
-    body,
-    cache: 'no-store',
-  });
-
-  if (!res.ok) return null;
-
-  const data = (await res.json().catch(() => null)) as any;
   const item = data?.data?.xdt_api__v1__media__shortcode__web_info?.items?.[0];
-  if (!item) return null;
-
+  if (!item) {
+    if (data?.errors) {
+      console.warn(`[reels] shortcode query ${shortcode}: ${JSON.stringify(data.errors[0])}`);
+    }
+    return null;
+  }
   return mediaFromItem(shortcode, item);
 }
 
-/** Strategy 2: scrape og:video from the public embed page. */
+/**
+ * Strategy 2: the query the logged-out desktop post page itself runs, keyed by
+ * numeric media id. Uses a different doc_id, so it keeps working if Instagram
+ * retires the shortcode one (and vice versa).
+ */
+async function resolveViaMediaIdQuery(
+  session: WebSession,
+  shortcode: string
+): Promise<ReelMedia | null> {
+  const mediaId = shortcodeToMediaId(shortcode);
+  if (!mediaId) return null;
+
+  const data = await postGraphql(session, shortcode, MEDIA_ID_QUERY, { media_id: mediaId });
+  const media = data?.data?.xig_polaris_media;
+  const item = media?.if_not_gated_logged_out;
+  if (!item) {
+    if (media?.gating_ruling) {
+      // Age/region/"followers only" gates need a logged-in viewer.
+      throw new ReelError(
+        'That reel can only be viewed when logged in to Instagram, so it cannot be downloaded here.',
+        403
+      );
+    }
+    if (data?.errors) {
+      console.warn(`[reels] media_id query ${shortcode}: ${JSON.stringify(data.errors[0])}`);
+    }
+    return null;
+  }
+  return mediaFromItem(shortcode, item);
+}
+
+/** Strategy 3: scrape the video url / og:video from the public embed page. */
 async function resolveViaEmbed(shortcode: string): Promise<ReelMedia | null> {
   const res = await fetch(`https://www.instagram.com/reel/${shortcode}/embed/captioned/`, {
     headers: { 'User-Agent': DESKTOP_UA, Accept: 'text/html' },
@@ -244,19 +385,37 @@ export async function resolveReel(inputUrl: string): Promise<ReelMedia> {
     throw new ReelError('Please paste a valid Instagram reel or post link.', 400);
   }
 
-  let apiError: unknown = null;
-  try {
-    const viaGraphql = await resolveViaGraphql(shortcode);
-    if (viaGraphql) return viaGraphql;
-  } catch (e) {
-    if (e instanceof ReelError && e.status !== 422) throw e;
-    apiError = e; // 422 "no video" — remember it, but still try the embed path
+  // A ReelError thrown by a strategy that *did* reach the post (e.g. "no
+  // video", "login required") is more useful than the generic failure, so
+  // remember it while still giving the remaining strategies a chance.
+  let knownError: ReelError | null = null;
+  const attempt = async (fn: () => Promise<ReelMedia | null>) => {
+    try {
+      return await fn();
+    } catch (e) {
+      if (e instanceof ReelError) knownError = knownError ?? e;
+      else console.warn(`[reels] ${shortcode}: ${(e as Error)?.message ?? e}`);
+      return null;
+    }
+  };
+
+  const session = await getWebSession().catch((e) => {
+    console.warn(`[reels] homepage fetch failed: ${(e as Error)?.message ?? e}`);
+    return null;
+  });
+
+  if (session) {
+    const viaShortcode = await attempt(() => resolveViaShortcodeQuery(session, shortcode));
+    if (viaShortcode) return viaShortcode;
+
+    const viaMediaId = await attempt(() => resolveViaMediaIdQuery(session, shortcode));
+    if (viaMediaId) return viaMediaId;
   }
 
-  const viaEmbed = await resolveViaEmbed(shortcode).catch(() => null);
+  const viaEmbed = await attempt(() => resolveViaEmbed(shortcode));
   if (viaEmbed) return viaEmbed;
 
-  if (apiError instanceof ReelError) throw apiError;
+  if (knownError) throw knownError;
   throw new ReelError(
     'Could not fetch that reel. It may be private, removed, or Instagram is rate-limiting us. Please try again.',
     502
